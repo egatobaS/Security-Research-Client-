@@ -3,25 +3,25 @@
 class Sockets
 {
 public:
-	Sockets(const char* Ip, short Port);
-	Sockets(short Port);
-	Sockets(SOCKET fd);
-	bool StablishConnection();
-	bool Listen(int backLog);
-	Sockets* Accept(sockaddr* addr, int* len);
 	void Close();
-	bool Receive(const char* Buffer, int Size);
-	bool Send(const char* Buffer, int Size);
-	int SetSocketOption(int Level, int OptionName, void* Value, int ValueSize);
+	Sockets(unsigned short Port);
+	Sockets(unsigned int s);
+	Sockets(const char* ConnectReceiveionAddr, unsigned short Port);
+	bool Receive(char* Data, int Size);
+	bool Send(const char* Data, int Length);
+	int SetSocketOption(int Level, int OptionName, void * OptionValue, int OptionLenght);
+	bool StartListener(int MaxConnections);
+	SOCKET Accept(sockaddr * address, int* length);
+	bool InitConnection(int Protocol);
+	SOCKET Socket;
 	~Sockets();
+
 private:
-	short portVar;
-	SOCKET fd;
-	sockaddr_in address;
-	char ipBuffer[32];
-	bool isConnectionClosed;
-	bool isConnectionStablished;
-	bool isListener;
-	bool isClient;
-	bool invalidData;
+	bool InitSockets();
+	bool isSocketConnected();
+	bool hasConnectionBeenClosed = false;
+	unsigned short port = 0;
+	char IP[1024] = { 0 };
 };
+
+#define SOCKET_TIME_OUT 		5000

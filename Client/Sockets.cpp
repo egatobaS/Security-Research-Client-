@@ -1,153 +1,222 @@
 #include "pch.h"
 
-bool Sockets::Send(const char* Buffer, int Size)
+bool Sockets::InitSockets()
 {
-	int RecvLen = Size;
-	int BufferPos = 0;
-
-	while (RecvLen)
-	{
-		int len = send(this->fd, (char*)Buffer + BufferPos, min(Size, 1024), 0);
-
-		if (len == -1)
-			break;
-
-		RecvLen -= len;
-		BufferPos += len;
-
-		if (!len || BufferPos == Size)
-			return true;
-	}
-
-	return false;
-
-}
-
-bool Sockets::Receive(const char* Buffer, int Size)
-{
-	int RecvLen = Size;
-	int BufferPos = 0;
-
-	int timeOut = 1000;
-
-	while (RecvLen)
-	{
-		int len = recv(this->fd, (char*)Buffer + BufferPos, min(Size, 1024), 0);
-
-		if (len == -1)
-			break;
-
-		RecvLen -= len;
-		BufferPos += len;
-
-		if (!len || BufferPos == Size)
-			return true;
-	}
-
-	return false;
-}
-
-bool Sockets::StablishConnection()
-{
-	this->address.sin_family = AF_INET;
-	this->address.sin_addr.s_addr = inet_addr(this->ipBuffer);
-	this->address.sin_port = htons(this->portVar);
-
-	this->fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-
-	if (connect(this->fd, (struct sockaddr*)&this->address, sizeof(sockaddr)) < 0)
-		return false;
-
-	this->isConnectionStablished = true;
-
 	return true;
 }
 
-void Sockets::Close()
+bool Sockets::InitConnection(int Protocol)
 {
-	shutdown(this->fd, SB_BOTH);
-	closesocket(this->fd);
+	struct sockaddr_in addr = { 0 };
 
-	this->isConnectionClosed = true;
-}
+	Socket = socket(AF_INET, SOCK_STREAM, Protocol);
 
-
-Sockets* Sockets::Accept(sockaddr* addr, int* len)
-{
-	SOCKET clfd = accept(this->fd, addr, len);
-
-	if (clfd == -1 || clfd == 0)
-		return NULL;
-
-	return new Sockets(clfd);
-}
-
-int Sockets::SetSocketOption(int Level, int OptionName, void* Value, int ValueSize)
-{
-	return setsockopt(this->fd, Level, OptionName, (const char*)Value, ValueSize);
-}
-
-bool Sockets::Listen(int backLog)
-{
-	this->address.sin_family = AF_INET;
-	this->address.sin_addr.s_addr = INADDR_ANY;
-	this->address.sin_port = htons(this->portVar);
-
-	this->fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-
-	if (bind(this->fd, (struct sockaddr*)&this->address, sizeof(sockaddr_in)) < 0)
+	if (Socket == -1)
 		return false;
 
-	if (listen(this->fd, backLog) < 0)
+	addr.sin_family = AF_INET;
+	addr.sin_port = htons(port);
+	addr.sin_addr.s_addr = inet_addr(IP);
+
+	if (addr.sin_addr.s_addr == INADDR_NONE)
+	{
+		struct hostent *phost = gethostbyname(IP);
+		if ((phost) && (phost->h_addrtype == AF_INET))
+			addr.sin_addr = *(in_addr*)(phost->h_addr);
+	}
+
+	if (connect(Socket, (sockaddr*)&addr, sizeof(addr)) < 0)
 		return false;
 
 	return true;
 }
 
-Sockets::Sockets(const char* Ip, short Port)
+Sockets::Sockets(const char* ConnectionAddr, unsigned short Port)
 {
-	if (Ip && Port)
+	if (InitSockets())
 	{
-		this->portVar = Port;
-		strcpy_s(this->ipBuffer, 32, Ip);
+		strcpy_s(IP, ConnectionAddr);
 
-		this->isConnectionClosed = false;
-		this->isListener = false;
-		this->isClient = true;
+		port = Port;
+
+		hasConnectionBeenClosed = false;
 	}
-	else this->invalidData = true;
-
 }
 
-Sockets::Sockets(short Port)
+Sockets::Sockets(unsigned short Port)
 {
-	if (Port)
+	if (InitSockets())
 	{
-		this->isConnectionClosed = false;
-		this->portVar = Port;
-		this->isListener = true;
-		this->isClient = false;
+		hasConnectionBeenClosed = false;
+		port = Port;
 	}
-	else this->invalidData = true;
 }
 
-Sockets::Sockets(SOCKET fd)
+Sockets::Sockets(unsigned int s)
 {
-	if (fd)
-	{
-		this->isConnectionClosed = false;
-		this->isListener = false;
-		this->fd = fd;
-		this->isClient = true;
-	}
-	else this->invalidData = true;
+	Socket = s;
+	hasConnectionBeenClosed = false;
 }
 
 Sockets::~Sockets()
 {
-	if (!this->isConnectionClosed)
-	{
-		this->Close();
-		this->isConnectionClosed = true;
+	Close();
+}
+
+void Sockets::Close()
+{
+#if defined(_WIN32)
+	shutdown(Socket, 2);
+	closesocket(Socket);
+#else
+	shutdown(Socket, SHUT_RDWR);
+	close(Socket);
+#endif
+
+}
+
+bool Sockets::isSocketConnected()
+{
+	char testBuffer = 0;
+
+#if defined(_WIN32)
+	return true;
+#else
+	int retError = recv(Socket, &testBuffer, 1, MSG_PEEK | MSG_DONTWAIT);
+
+	if (retError == -1) {
+
+		if (errno != EWOULDBLOCK)
+			return false;
 	}
+#endif
+	return true;
+}
+
+bool Sockets::Receive(char* Data, int Size)
+{
+	int Start = GetTickCount();
+
+	char* CurrentPosition = (char*)Data;
+
+	int DataLeft = Size;
+
+	int ReceiveStatus = 0;
+
+	while (DataLeft > 0)
+	{
+		if ((GetTickCount() - Start) > SOCKET_TIME_OUT) {
+			return false;
+		}
+
+		int DataChunkSize = min(1024 * 2, DataLeft);
+
+		if (!isSocketConnected()) return false;
+
+#if defined(_WIN32)
+		ReceiveStatus = recv(Socket, CurrentPosition, DataChunkSize, 0);
+#else
+		ReceiveStatus = recv(Socket, CurrentPosition, DataChunkSize, MSG_NOSIGNAL);
+#endif
+		if (ReceiveStatus == -1 && errno != EWOULDBLOCK)
+			break;
+
+		CurrentPosition += ReceiveStatus;
+		DataLeft -= ReceiveStatus;
+
+		if (ReceiveStatus == 0)
+			break;
+	}
+
+	if (ReceiveStatus == -1) {
+		printf("Receive Failed With Error %i\n", WSAGetLastError());
+		return false;
+	}
+	return true;
+}
+
+bool Sockets::Send(const char* Data, int Length)
+{
+	int Start = GetTickCount();
+
+	char* CurrentPosition = (char*)Data;
+
+	int DataLeft = Length;
+
+	int SentStatus = 0;
+
+	while (DataLeft > 0)
+	{
+		if ((GetTickCount() - Start) > SOCKET_TIME_OUT) {
+			return false;
+		}
+
+		int DataChunkSize = min(1024 * 2, DataLeft);
+
+		if (!isSocketConnected()) return false;
+
+#if defined(_WIN32)
+		SentStatus = send(Socket, CurrentPosition, DataChunkSize, 0);
+#else
+		SentStatus = send(Socket, CurrentPosition, DataChunkSize, MSG_NOSIGNAL);
+#endif
+		if (SentStatus == -1 && errno != EWOULDBLOCK)
+			break;
+
+		DataLeft -= SentStatus;
+		CurrentPosition += SentStatus;
+	}
+
+	if (SentStatus == -1) {
+		printf("Send Failed With Error %i\n", errno);
+		return false;
+	}
+	return true;
+}
+
+int Sockets::SetSocketOption(int Level, int OptionName, void * OptionValue, int OptionLenght)
+{
+#if defined(_WIN32)
+	return setsockopt(Socket, Level, OptionName, (const char*)OptionValue, OptionLenght);
+#else
+	return setsockopt(Socket, Level, OptionName, (void*)OptionValue, OptionLenght);
+#endif
+	return 1;
+}
+
+bool Sockets::StartListener(int MaxConnections)
+{
+	struct sockaddr_in addr;
+
+	Socket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+
+	int Enable = 1;
+	SetSocketOption(SOL_SOCKET, SO_REUSEADDR, &Enable, sizeof(int));
+
+	addr.sin_family = AF_INET;
+	addr.sin_port = htons(port);
+	addr.sin_addr.s_addr = INADDR_ANY;
+
+#if defined(_WIN32)
+	if (bind(Socket, (sockaddr*)&addr, sizeof(sockaddr)))
+		return false;
+#else
+	if (bind(Socket, (struct sockaddr *)&addr, sizeof(sockaddr_in)))
+		return false;
+#endif
+
+	if (listen(Socket, MaxConnections))
+		return false;
+
+	return true;
+}
+
+SOCKET Sockets::Accept(sockaddr * address, int* length)
+{
+#if defined(_WIN32)
+	return accept(Socket, (struct sockaddr *)address, length);
+#else
+	return accept(Socket, (struct sockaddr *)address, (socklen_t*)length);
+#endif
+
 }
